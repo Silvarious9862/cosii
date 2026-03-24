@@ -34,3 +34,7 @@ def fft_dit(x: List[complex], inverse: bool = False) -> List[complex]:
         omega *= omega_N
     return y
 
+def ifft_dit(X: List[complex]) -> List[complex]:
+    N = len(X)
+    x_rec = fft_dit(X, inverse=True)
+    return [val / N for val in x_rec]
