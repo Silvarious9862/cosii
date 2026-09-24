@@ -85,15 +85,27 @@ def segment_kmeans(image_bgr, k=5, attempts=10):
     return segmented_bgr, label_map, centers_bgr, compactness
 
 
-def detect_background_cluster(label_map, border_width=20):
+def detect_background_clusters(
+    label_map,
+    border_width=20,
+    min_border_fraction=0.08,
+):
     """
-    Определяет наиболее вероятный фон по меткам на границе кадра.
+    Возвращает все кластеры, заметно представленные на рамке кадра.
 
-    Предположение: фон присутствует на значительной части внешней рамки.
+    Для текстурного фона дерево может быть разбито k-means
+    на несколько кластеров: светлое дерево, тёмное дерево, тени.
+    Такие кластеры считаются фоном одновременно.
+
+    min_border_fraction — минимальная доля пикселей рамки,
+    которую должен занимать кластер, чтобы считаться фоновым.
     """
     height, width = label_map.shape
 
-    border_width = min(border_width, height // 4, width // 4)
+    border_width = max(
+        1,
+        min(border_width, height // 4, width // 4)
+    )
 
     border_labels = np.concatenate([
         label_map[:border_width, :].ravel(),
@@ -102,27 +114,45 @@ def detect_background_cluster(label_map, border_width=20):
         label_map[:, -border_width:].ravel(),
     ])
 
-    cluster_ids, counts = np.unique(border_labels, return_counts=True)
-
-    return int(cluster_ids[np.argmax(counts)])
-
-
-def build_foreground_mask(label_map, border_width=20):
-    """
-    Строит маску переднего плана.
-
-    Белые пиксели — все кластеры, кроме автоматически найденного фона.
-    Чёрные пиксели — предполагаемый фон.
-    """
-    background_id = detect_background_cluster(
-        label_map,
-        border_width=border_width
+    cluster_ids, counts = np.unique(
+        border_labels,
+        return_counts=True,
     )
 
-    foreground_mask = np.zeros(label_map.shape, dtype=np.uint8)
-    foreground_mask[label_map != background_id] = 255
+    border_fractions = counts / counts.sum()
 
-    return foreground_mask, background_id
+    background_ids = cluster_ids[
+        border_fractions >= min_border_fraction
+    ]
+
+    return background_ids.astype(int).tolist()
+
+def build_foreground_mask(
+    label_map,
+    border_width=20,
+    min_border_fraction=0.08,
+):
+    """
+    Строит маску переднего плана с несколькими фоновыми кластерами.
+
+    Белое — кластеры, которые не относятся к фону.
+    Чёрное — все кластеры, заметно представленные на границе кадра.
+
+    Возвращает:
+    - foreground_mask;
+    - background_ids: список фоновых кластеров.
+    """
+    background_ids = detect_background_clusters(
+        label_map,
+        border_width=border_width,
+        min_border_fraction=min_border_fraction,
+    )
+
+    foreground_mask = np.uint8(
+        ~np.isin(label_map, background_ids)
+    ) * 255
+
+    return foreground_mask, background_ids
 
 
 def fill_holes(binary_mask):
@@ -243,9 +273,10 @@ def automatic_kmeans_mask(
             attempts=attempts
         )
 
-        foreground_mask, background_id = build_foreground_mask(
+        foreground_mask, background_ids = build_foreground_mask(
             label_map,
-            border_width=border_width
+            border_width=border_width,
+            min_border_fraction=0.08,
         )
 
         cleaned_mask = clean_mask(
@@ -267,7 +298,7 @@ def automatic_kmeans_mask(
             "labels": label_map,
             "centers": centers,
             "compactness": compactness,
-            "background_id": background_id,
+            "background_ids": background_ids,
             "foreground_mask": foreground_mask,
             "cleaned_mask": cleaned_mask,
             "filled_mask": filled_mask,
